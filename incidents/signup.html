@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Đăng ký | Quản lý sự cố</title></head>
+<body><main class="auth"><div class="card">
+<h1>Tạo tài khoản nhân viên</h1>
+<form id="f" novalidate>
+  <div><label for="name">Họ và tên</label><input id="name" autocomplete="name" required></div>
+  <div><label for="dept">Phòng ban / bộ phận</label><input id="dept"></div>
+  <div><label for="phone">Số điện thoại</label><input id="phone" type="tel" autocomplete="tel"></div>
+  <div><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+  <div><label for="pw">Mật khẩu (tối thiểu 8 ký tự)</label><input id="pw" type="password" autocomplete="new-password" required></div>
+  <div><label for="pw2">Nhập lại mật khẩu</label><input id="pw2" type="password" autocomplete="new-password" required></div>
+  <div class="error" id="err" role="alert"></div>
+  <button class="primary" id="btn" style="width:100%">Tạo tài khoản</button>
+</form>
+<p class="muted">Đã có tài khoản? <a href="signin.html">Đăng nhập</a></p>
+</div></main>
+<script>
+configBanner();
+$('#f').onsubmit = async e => {
+  e.preventDefault(); const err=$('#err'); err.textContent='';
+  const name=$('#name').value.trim(), email=$('#email').value.trim(), pw=$('#pw').value;
+  if(!name||!email) return err.textContent='Nhập họ tên và email.';
+  if(pw.length<8) return err.textContent='Mật khẩu cần ít nhất 8 ký tự.';
+  if(pw!==$('#pw2').value) return err.textContent='Hai mật khẩu chưa khớp.';
+  $('#btn').disabled=true;
+  const { data, error } = await sb.auth.signUp({ email, password: pw, options: {
+    data: { full_name: name, department: $('#dept').value.trim(), phone: $('#phone').value.trim() },
+    emailRedirectTo: new URL('signin.html', location.href).href } });
+  if (error) { err.textContent = /registered/i.test(error.message) ? 'Email này đã được đăng ký.' : error.message; $('#btn').disabled=false; return; }
+  if (data.session) { location.href='index.html'; return; }
+  $('#f').innerHTML = '<p>Đã tạo tài khoản. Hãy mở email xác nhận, sau đó <a href="signin.html">đăng nhập</a>.</p>';
+};
+</script></body></html>

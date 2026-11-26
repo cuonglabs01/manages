@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<title>Danh sách sự cố | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div class="head"><div><h1>Danh sách sự cố</h1><div class="muted" id="count"></div></div>
+  <div class="row"><button id="export" type="button">Xuất Excel</button><a class="btn primary" href="incident-form.html">Báo cáo sự cố mới</a></div></div>
+<section class="card"><div class="row">
+  <div style="flex:2;min-width:220px"><label for="q">Tìm kiếm</label><input id="q" placeholder="Mã, tiêu đề, hệ thống, nguyên nhân"></div>
+  <div><label for="appr">Duyệt</label><select id="appr"><option value="">Tất cả</option><option value="pending">Chờ duyệt</option><option value="approved">Đã duyệt</option><option value="rejected">Bị từ chối</option></select></div>
+  <div><label for="state">Tình trạng</label><select id="state"><option value="">Tất cả</option><option value="open">Còn tồn</option><option value="done">Đã khắc phục</option></select></div>
+  <div><label for="sev">Mức độ</label><select id="sev"><option value="">Tất cả</option><option value="critical">Nghiêm trọng</option><option value="high">Cao</option><option value="medium">Trung bình</option><option value="low">Thấp</option></select></div>
+  <div><label for="sys">Hệ thống</label><select id="sys"><option value="">Tất cả</option></select></div>
+  <div><label for="from">Từ ngày</label><input type="date" id="from"></div>
+  <div><label for="to">Đến ngày</label><input type="date" id="to"></div>
+  <div><label><input type="checkbox" id="mine" style="width:auto"> Chỉ của tôi</label></div>
+</div></section>
+<section class="card"><div class="tablewrap"><table><thead><tr><th>Mã</th><th>Tiêu đề</th><th>Hệ thống</th><th>Mức độ</th><th>Bắt đầu</th><th>Thời gian khắc phục</th><th>Tình trạng</th><th>Duyệt</th><th>Người báo cáo</th></tr></thead><tbody id="tb"></tbody></table></div>
+<div class="pager"><button id="prev" type="button">Trước</button><span id="pg"></span><button id="next" type="button">Sau</button></div></section>
+</main></div>
+<script>
+let ctx, ALL = [], FILTERED = [], page = 1, size = 20;
+function filtered() {
+  const q = $('#q').value.trim().toLowerCase(), f = $('#from').value, t = $('#to').value;
+  return ALL.filter(r => {
+    if (q && !(`${r.code} ${r.title} ${r.system_name} ${r.root_cause || ''} ${r.description || ''}`.toLowerCase().includes(q))) return false;
+    if ($('#appr').value && r.approval !== $('#appr').value) return false;
+    if ($('#state').value === 'open' && r.resolved_at) return false;
+    if ($('#state').value === 'done' && !r.resolved_at) return false;
+    if ($('#sev').value && r.severity !== $('#sev').value) return false;
+    if ($('#sys').value && r.system_name !== $('#sys').value) return false;
+    if ($('#mine').checked && r.created_by !== ctx.user.id) return false;
+    const d = r.started_at.slice(0, 10);
+    if (f && d < f) return false; if (t && d > t) return false;
+    return true;
+  });
+}
+function render() {
+  FILTERED = filtered();
+  const pages = Math.max(1, Math.ceil(FILTERED.length / size)); page = Math.min(page, pages);
+  const slice = FILTERED.slice((page - 1) * size, page * size);
+  $('#count').textContent = `${FILTERED.length} / ${ALL.length} sự cố`;
+  $('#tb').innerHTML = slice.length ? slice.map(r => `<tr class="click" data-id="${r.id}">
+    <td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${esc(r.system_name)}</td><td>${sevBadge(r.severity)}</td>
+    <td>${fmt(r.started_at)}</td><td>${r.resolved_at ? fmtDur(hoursBetween(r.started_at, r.resolved_at)) : '—'}</td>
+    <td>${stateBadge(r)}</td><td>${apprBadge(r.approval)}</td><td>${esc(r.creator?.full_name || '')}</td></tr>`).join('')
+    : '<tr><td colspan="9" class="empty">Không có sự cố nào khớp bộ lọc. Thử bỏ bớt bộ lọc hoặc báo cáo sự cố mới.</td></tr>';
+  $('#pg').textContent = `Trang ${page}/${pages}`;
+  $('#prev').disabled = page <= 1; $('#next').disabled = page >= pages;
+  $$('#tb tr.click').forEach(tr => tr.onclick = () => location.href = 'incident-detail.html?id=' + tr.dataset.id);
+}
+const r2 = v => v == null ? '' : +v.toFixed(2);
+function exportXlsx() {
+  if (!FILTERED.length) return toast('Không có dữ liệu để xuất.');
+  const rows = FILTERED.map(r => ({
+    'Mã': r.code, 'Tiêu đề': r.title, 'Hệ thống': r.system_name, 'Phân loại': r.category || '', 'Mức độ': SEV[r.severity],
+    'Bắt đầu hỏng': fmt(r.started_at), 'Phát hiện': fmt(r.detected_at), 'Khắc phục xong': fmt(r.resolved_at),
+    'Thời gian khắc phục (giờ)': r.resolved_at ? r2(hoursBetween(r.started_at, r.resolved_at)) : '',
+    'Tình trạng': r.resolved_at ? 'Đã khắc phục' : 'Còn tồn', 'Duyệt': APPR[r.approval], 'Ghi chú duyệt': r.review_note || '',
+    'Mô tả': r.description || '', 'Nguyên nhân gốc': r.root_cause || '', 'Cách khắc phục': r.resolution || '', 'Người báo cáo': r.creator?.full_name || ''
+  }));
+  const m = computeMetrics(FILTERED.filter(r => r.approval === 'approved'));
+  const sum = [{ 'Hệ thống': 'Tất cả', 'Số sự cố đã khắc phục': m.resolvedCount, 'MTTR (giờ)': r2(m.mttr), 'MTBF (giờ)': r2(m.mtbf) },
+    ...m.systems.map(s => ({ 'Hệ thống': s.name, 'Số sự cố đã khắc phục': s.count, 'MTTR (giờ)': r2(s.mttr), 'MTBF (giờ)': r2(s.mtbf) }))];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Sự cố');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sum), 'MTTR-MTBF');
+  XLSX.writeFile(wb, `su-co-${new Date().toLocaleDateString('sv-SE')}.xlsx`);
+}
+(async () => {
+  ctx = await requireAuth({ active: 'list' });
+  size = +ctx.profile.settings.page_size || 20;
+  if (qs('approval')) $('#appr').value = qs('approval');
+  if (qs('state')) $('#state').value = qs('state');
+  const { data, error } = await sb.from('incidents').select('*, creator:profiles!created_by(full_name)').order('started_at', { ascending: false }).limit(5000);
+  if (error) { $('#tb').innerHTML = `<tr><td colspan="9" class="error">${esc(error.message)}</td></tr>`; return; }
+  ALL = data;
+  $('#sys').innerHTML += [...new Set(ALL.map(r => r.system_name))].sort().map(n => `<option>${esc(n)}</option>`).join('');
+  $$('.card input,.card select').forEach(el => el.addEventListener('input', () => { page = 1; render(); }));
+  $('#prev').onclick = () => { page--; render(); }; $('#next').onclick = () => { page++; render(); };
+  $('#export').onclick = exportXlsx; render();
+})();
+</script></body></html>

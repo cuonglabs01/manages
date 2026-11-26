@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Hồ sơ | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div class="head"><div><h1>Hồ sơ của tôi</h1><div class="muted" id="role"></div></div></div>
+<div class="grid2">
+<section class="card"><h2>Thông tin cá nhân</h2><form id="pf" class="form-grid">
+  <div class="full"><label for="name">Họ và tên</label><input id="name" required></div>
+  <div><label for="dept">Phòng ban</label><input id="dept"></div>
+  <div><label for="phone">Điện thoại</label><input id="phone" type="tel"></div>
+  <div class="full"><label for="email">Email</label><input id="email" disabled></div>
+  <div class="full"><button class="primary">Lưu thông tin</button></div></form></section>
+<section class="card"><h2>Cài đặt</h2><form id="sf" class="form-grid">
+  <div><label for="theme">Giao diện</label><select id="theme"><option value="">Theo hệ thống</option><option value="light">Sáng</option><option value="dark">Tối</option></select></div>
+  <div><label for="psize">Số dòng mỗi trang</label><select id="psize"><option>10</option><option>20</option><option>50</option><option>100</option></select></div>
+  <div><label for="dsys">Hệ thống hay báo cáo</label><input id="dsys" list="sysl"><datalist id="sysl"></datalist></div>
+  <div><label for="dsev">Mức độ mặc định</label><select id="dsev"><option value="">Trung bình</option><option value="low">Thấp</option><option value="medium">Trung bình</option><option value="high">Cao</option><option value="critical">Nghiêm trọng</option></select></div>
+  <div class="full"><button class="primary">Lưu cài đặt</button></div></form></section>
+</div>
+<section class="card" style="margin-top:1rem"><h2>Đổi mật khẩu</h2><form id="pw" class="row"><div><label for="np">Mật khẩu mới (tối thiểu 8 ký tự)</label><input id="np" type="password" autocomplete="new-password"></div><button class="primary">Đổi mật khẩu</button></form><div class="error" id="perr" role="alert"></div></section>
+<section class="card"><h2>Gợi ý cho bạn</h2><div id="tips"></div></section>
+<section class="card"><div class="head" style="margin:0 0 .5rem"><h2 style="margin:0">Lịch sử đã nhập</h2><a href="incidents.html">Mở danh sách để lọc và xuất Excel</a></div>
+  <div class="muted" id="sum"></div><div class="tablewrap"><table><thead><tr><th>Mã</th><th>Tiêu đề</th><th>Hệ thống</th><th>Bắt đầu</th><th>Tình trạng</th><th>Duyệt</th></tr></thead><tbody id="hist"></tbody></table></div></section>
+</main></div>
+<script>
+let ctx, mine = [];
+async function tips() {
+  const out = [], open = mine.filter(r => !r.resolved_at && r.approval !== 'rejected'), rej = mine.filter(r => r.approval === 'rejected');
+  rej.forEach(r => out.push(`<div class="sug"><b>Cần sửa:</b> <a href="incident-form.html?id=${r.id}">${esc(r.code)} ${esc(r.title)}</a><div class="muted">${esc(r.review_note || 'Không có ghi chú')}</div></div>`));
+  if (open.length) out.push(`<div class="sug"><b>${open.length} báo cáo của bạn chưa ghi thời điểm khắc phục.</b> Cập nhật để MTTR chính xác: ${open.slice(0, 5).map(r => `<a href="incident-form.html?id=${r.id}">${esc(r.code)}</a>`).join(', ')}</div>`);
+  const cnt = {}; mine.forEach(r => cnt[r.system_name] = (cnt[r.system_name] || 0) + 1);
+  const top = Object.entries(cnt).sort((a, b) => b[1] - a[1]).slice(0, 3).map(e => e[0]);
+  if (top.length) {
+    const { data } = await sb.from('incidents').select('id,code,title,system_name,resolution').in('system_name', top).eq('approval', 'approved').not('resolution', 'is', null).order('started_at', { ascending: false }).limit(6);
+    (data || []).forEach(r => out.push(`<div class="sug"><b>${esc(r.system_name)}:</b> <a href="incident-detail.html?id=${r.id}">${esc(r.code)} ${esc(r.title)}</a><div class="muted">Cách khắc phục: ${esc(r.resolution)}</div></div>`));
+  }
+  $('#tips').innerHTML = out.length ? out.join('') : '<div class="empty">Chưa có gợi ý. Gợi ý xuất hiện khi bạn có báo cáo bị từ chối, báo cáo chưa khắc phục, hoặc sự cố đã duyệt trên các hệ thống bạn hay báo cáo.</div>';
+}
+(async () => {
+  ctx = await requireAuth({ active: 'profile' });
+  const p = ctx.profile, st = p.settings;
+  $('#role').textContent = p.role === 'admin' ? 'Quản trị viên' : 'Nhân viên';
+  $('#name').value = p.full_name || ''; $('#dept').value = p.department || ''; $('#phone').value = p.phone || ''; $('#email').value = p.email || ctx.user.email;
+  $('#theme').value = st.theme || ''; $('#psize').value = st.page_size || 20; $('#dsys').value = st.default_system || ''; $('#dsev').value = st.default_severity || '';
+  const { data } = await sb.from('incidents').select('*').eq('created_by', ctx.user.id).order('started_at', { ascending: false }).limit(2000);
+  mine = data || [];
+  $('#sysl').innerHTML = [...new Set(mine.map(r => r.system_name))].map(n => `<option value="${esc(n)}">`).join('');
+  const c = a => mine.filter(r => r.approval === a).length;
+  $('#sum').textContent = `Tổng ${mine.length} báo cáo: ${c('approved')} đã duyệt, ${c('pending')} chờ duyệt, ${c('rejected')} bị từ chối.`;
+  $('#hist').innerHTML = mine.length ? mine.slice(0, 10).map(r => `<tr class="click" onclick="location.href='incident-detail.html?id=${r.id}'"><td>${esc(r.code)}</td><td>${esc(r.title)}</td><td>${esc(r.system_name)}</td><td>${fmt(r.started_at)}</td><td>${stateBadge(r)}</td><td>${apprBadge(r.approval)}</td></tr>`).join('')
+    : '<tr><td colspan="6" class="empty">Bạn chưa nhập báo cáo nào. <a href="incident-form.html">Báo cáo sự cố đầu tiên</a></td></tr>';
+  tips();
+  $('#pf').onsubmit = async e => { e.preventDefault();
+    const { error } = await sb.from('profiles').update({ full_name: $('#name').value.trim(), department: $('#dept').value.trim() || null, phone: $('#phone').value.trim() || null }).eq('id', ctx.user.id);
+    toast(error ? error.message : 'Đã lưu thông tin.'); };
+  $('#sf').onsubmit = async e => { e.preventDefault();
+    const settings = { ...st, theme: $('#theme').value, page_size: +$('#psize').value, default_system: $('#dsys').value.trim(), default_severity: $('#dsev').value };
+    const { error } = await sb.from('profiles').update({ settings }).eq('id', ctx.user.id);
+    if (error) return toast(error.message); Object.assign(st, settings); applyTheme(settings.theme); toast('Đã lưu cài đặt.'); };
+  $('#pw').onsubmit = async e => { e.preventDefault(); $('#perr').textContent = '';
+    const v = $('#np').value; if (v.length < 8) return $('#perr').textContent = 'Mật khẩu cần ít nhất 8 ký tự.';
+    const { error } = await sb.auth.updateUser({ password: v });
+    if (error) return $('#perr').textContent = error.message; $('#np').value = ''; toast('Đã đổi mật khẩu.'); };
+})();
+</script></body></html>

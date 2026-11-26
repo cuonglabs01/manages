@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Duyệt và tồn đọng | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div class="head"><div><h1>Duyệt và tồn đọng</h1><div class="muted">Báo cáo nhân viên gửi lên và các sự cố chưa khắc phục.</div></div></div>
+<div class="row" id="tabs" style="margin-bottom:1rem"></div>
+<section class="card"><div class="tablewrap"><table><thead id="th"></thead><tbody id="tb"></tbody></table></div></section>
+</main></div>
+<script>
+let ctx, ALL = [], tab = 'pending';
+const TABS = { pending: 'Chờ duyệt', backlog: 'Còn tồn', rejected: 'Bị từ chối' };
+const sel = {
+  pending: r => r.approval === 'pending',
+  backlog: r => !r.resolved_at && r.approval !== 'rejected',
+  rejected: r => r.approval === 'rejected' };
+async function act(rid, status) {
+  let note = null;
+  if (status === 'rejected') { note = prompt('Lý do từ chối (nhân viên sẽ thấy nội dung này):'); if (!note || !note.trim()) return toast('Cần nhập lý do từ chối.'); }
+  const { error } = await sb.from('incidents').update({ approval: status, review_note: note, reviewed_by: ctx.user.id, reviewed_at: new Date().toISOString() }).eq('id', rid);
+  if (error) return toast(error.message);
+  await logEvent(rid, status === 'approved' ? 'Đã duyệt' : 'Từ chối', note); toast('Đã cập nhật.'); await loadData(); render();
+}
+function render() {
+  $('#tabs').innerHTML = Object.entries(TABS).map(([k, v]) => `<button type="button" class="${k === tab ? 'primary' : ''}" data-t="${k}">${v} (${ALL.filter(sel[k]).length})</button>`).join('');
+  $$('[data-t]').forEach(b => b.onclick = () => { tab = b.dataset.t; render(); });
+  const rows = ALL.filter(sel[tab]).sort((a, b) => new Date(tab === 'backlog' ? a.started_at : a.created_at) - new Date(tab === 'backlog' ? b.started_at : b.created_at));
+  $('#th').innerHTML = `<tr><th>Mã</th><th>Tiêu đề</th><th>Hệ thống</th><th>Mức độ</th><th>Người báo cáo</th><th>${tab === 'backlog' ? 'Đã tồn' : 'Gửi lúc'}</th><th></th></tr>`;
+  $('#tb').innerHTML = rows.length ? rows.map(r => `<tr><td><a href="incident-detail.html?id=${r.id}">${esc(r.code)}</a></td><td>${esc(r.title)}${tab === 'rejected' && r.review_note ? `<div class="muted">${esc(r.review_note)}</div>` : ''}</td><td>${esc(r.system_name)}</td><td>${sevBadge(r.severity)}</td>
+    <td>${esc(r.creator?.full_name || '')}</td><td>${tab === 'backlog' ? fmtDur(hoursBetween(r.started_at, new Date())) : fmt(r.created_at)}</td>
+    <td>${r.approval === 'pending' ? `<div class="row"><button class="ok" data-a="${r.id}">Duyệt</button><button class="danger" data-r="${r.id}">Từ chối</button></div>` : apprBadge(r.approval)}</td></tr>`).join('')
+    : `<tr><td colspan="7" class="empty">${tab === 'pending' ? 'Không có báo cáo nào đang chờ duyệt.' : tab === 'backlog' ? 'Không còn sự cố tồn đọng.' : 'Không có báo cáo bị từ chối.'}</td></tr>`;
+  $$('[data-a]').forEach(b => b.onclick = () => act(b.dataset.a, 'approved'));
+  $$('[data-r]').forEach(b => b.onclick = () => act(b.dataset.r, 'rejected'));
+}
+async function loadData() {
+  const { data, error } = await sb.from('incidents').select('*, creator:profiles!created_by(full_name)').order('started_at', { ascending: false }).limit(5000);
+  if (error) { toast(error.message); return; } ALL = data;
+}
+(async () => { ctx = await requireAuth({ admin: true, active: 'approvals' }); await loadData(); render(); })();
+</script></body></html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Tổng quan | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div class="head"><div><h1>Tổng quan sự cố</h1><div class="muted">Chỉ sự cố đã duyệt được tính vào MTTR và MTBF.</div></div>
+  <a class="btn primary" href="incident-form.html">Báo cáo sự cố mới</a></div>
+<section class="card"><div class="row">
+  <div><label for="from">Từ ngày</label><input type="date" id="from"></div>
+  <div><label for="to">Đến ngày</label><input type="date" id="to"></div>
+  <div><label for="sys">Hệ thống</label><select id="sys"><option value="">Tất cả</option></select></div>
+  <button id="apply" class="primary" type="button">Áp dụng</button></div></section>
+<div class="kpis" id="kpis"></div>
+<section class="card"><h2>Thời gian ngừng hoạt động theo hệ thống</h2>
+  <div class="muted">Mỗi vạch đỏ là một lần sự cố, từ lúc hỏng đến lúc khắc phục. Vạch sọc là sự cố còn tồn.</div>
+  <div class="tl" id="tl"></div><div class="tl-axis" id="axis"></div></section>
+<div class="grid2">
+  <section class="card"><h2>Theo mức độ</h2><div id="bySev"></div></section>
+  <section class="card"><h2>Theo tháng</h2><div id="byMonth"></div></section></div>
+<section class="card" style="margin-top:1rem"><h2>MTTR và MTBF theo hệ thống</h2>
+  <div class="tablewrap"><table><thead><tr><th>Hệ thống</th><th>Số sự cố đã khắc phục</th><th>MTTR</th><th>MTBF</th></tr></thead><tbody id="sysT"></tbody></table></div>
+  <p class="muted">MTTR: thời gian khắc phục trung bình (từ lúc hỏng đến khi xong). MTBF: thời gian chạy ổn định trung bình giữa hai sự cố liên tiếp của cùng hệ thống, cần từ 2 sự cố trở lên.</p></section>
+</main></div>
+<script>
+let ALL = [];
+const dstr = d => d.toLocaleDateString('sv-SE');
+function bars(el, entries) {
+  const max = Math.max(1, ...entries.map(e => e[1]));
+  el.innerHTML = entries.length ? entries.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${v / max * 100}%"></i><b>${v}</b></div>`).join('') : '<div class="empty">Chưa có dữ liệu.</div>';
+}
+function render() {
+  const f = new Date($('#from').value + 'T00:00:00'), t = new Date($('#to').value + 'T23:59:59'), sys = $('#sys').value;
+  const bySys = ALL.filter(r => !sys || r.system_name === sys);
+  const rows = bySys.filter(r => { const s = new Date(r.started_at); return s >= f && s <= t; });
+  const m = computeMetrics(rows.filter(r => r.approval === 'approved'));
+  const backlog = bySys.filter(r => !r.resolved_at && r.approval !== 'rejected').length;
+  const pending = bySys.filter(r => r.approval === 'pending').length;
+  $('#kpis').innerHTML = `
+    <div><b>${rows.length}</b><span>Sự cố trong kỳ</span></div>
+    <div class="${backlog ? 'bad' : ''}"><b>${backlog}</b><span>Còn tồn hiện tại</span></div>
+    <div><b>${pending}</b><span>Chờ duyệt</span></div>
+    <div><b>${fmtDur(m.mttr)}</b><span>MTTR</span></div>
+    <div><b>${fmtDur(m.mtbf)}</b><span>MTBF</span></div>`;
+  // dòng thời gian
+  const t0 = f.getTime(), t1 = t.getTime(), span = Math.max(1, t1 - t0);
+  const names = Object.entries(rows.reduce((o, r) => (o[r.system_name] = (o[r.system_name] || 0) + 1, o), {})).sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
+  $('#tl').innerHTML = names.length ? names.map(n => {
+    const segs = rows.filter(r => r.system_name === n && r.approval !== 'rejected').map(r => {
+      const a = Math.max(t0, new Date(r.started_at).getTime()), b = Math.min(t1, r.resolved_at ? new Date(r.resolved_at).getTime() : Date.now());
+      return `<a class="tl-seg ${r.resolved_at ? '' : 'open'}" href="incident-detail.html?id=${r.id}" title="${esc(r.code + ': ' + r.title)}" style="left:${(a - t0) / span * 100}%;width:${Math.max(0.4, (b - a) / span * 100)}%"></a>`;
+    }).join('');
+    return `<div class="tl-row"><span>${esc(n)}</span><div class="tl-track">${segs}</div></div>`;
+  }).join('') : '<div class="empty">Không có sự cố trong khoảng thời gian này.</div>';
+  $('#axis').innerHTML = `<span>${f.toLocaleDateString('vi-VN')}</span><span>${t.toLocaleDateString('vi-VN')}</span>`;
+  bars($('#bySev'), ['critical', 'high', 'medium', 'low'].map(s => [SEV[s], rows.filter(r => r.severity === s).length]));
+  const months = {};
+  rows.forEach(r => { const k = r.started_at.slice(0, 7); months[k] = (months[k] || 0) + 1; });
+  bars($('#byMonth'), Object.entries(months).sort().slice(-12));
+  $('#sysT').innerHTML = m.systems.length ? m.systems.map(s => `<tr><td>${esc(s.name)}</td><td>${s.count}</td><td>${fmtDur(s.mttr)}</td><td>${fmtDur(s.mtbf)}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">Chưa có sự cố đã duyệt và đã khắc phục trong kỳ này.</td></tr>';
+}
+(async () => {
+  await requireAuth({ active: 'index' });
+  $('#from').value = dstr(new Date(Date.now() - 90 * 864e5)); $('#to').value = dstr(new Date());
+  const { data, error } = await sb.from('incidents').select('*').order('started_at', { ascending: false }).limit(5000);
+  if (error) { $('#kpis').innerHTML = `<div class="error">${esc(error.message)}</div>`; return; }
+  ALL = data;
+  $('#sys').innerHTML += [...new Set(ALL.map(r => r.system_name))].sort().map(n => `<option>${esc(n)}</option>`).join('');
+  $('#apply').onclick = render; render();
+})();
+</script></body></html>

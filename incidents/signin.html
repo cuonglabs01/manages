@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Đăng nhập | Quản lý sự cố</title></head>
+<body><main class="auth"><div class="card">
+<h1>Đăng nhập</h1>
+<form id="f" novalidate>
+  <div><label for="email">Email</label><input id="email" type="email" autocomplete="email" required></div>
+  <div><label for="pw">Mật khẩu</label><input id="pw" type="password" autocomplete="current-password" required></div>
+  <div class="error" id="err" role="alert"></div>
+  <button class="primary" id="btn" style="width:100%">Đăng nhập</button>
+</form>
+<p class="muted">Chưa có tài khoản? <a href="signup.html">Đăng ký</a></p>
+</div></main>
+<script>
+configBanner();
+function go(){ const n=qs('next'); location.href = n && /^[A-Za-z0-9_-]+\.html(\?[^#]*)?$/.test(n) ? n : 'index.html'; }
+sb.auth.getSession().then(({data:{session}})=>{ if(session) go(); });
+$('#f').onsubmit = async e => {
+  e.preventDefault(); $('#err').textContent=''; $('#btn').disabled=true;
+  const { error } = await sb.auth.signInWithPassword({ email: $('#email').value.trim(), password: $('#pw').value });
+  if (error) {
+    $('#err').textContent = /Invalid login/i.test(error.message) ? 'Email hoặc mật khẩu không đúng.'
+      : /not confirmed/i.test(error.message) ? 'Email chưa được xác nhận. Hãy mở email xác nhận rồi đăng nhập lại.' : error.message;
+    $('#btn').disabled=false; return;
+  }
+  go();
+};
+</script></body></html>

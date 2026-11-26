@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Báo cáo sự cố | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div class="head"><div><h1 id="h">Báo cáo sự cố mới</h1><div class="muted" id="sub">Báo cáo sẽ được gửi cho quản trị viên duyệt.</div></div></div>
+<div id="lock"></div>
+<form id="f" novalidate>
+<section class="card"><div class="form-grid">
+  <div class="full"><label for="title">Tiêu đề *</label><input id="title" required maxlength="200"></div>
+  <div><label for="system">Thiết bị / hệ thống *</label><input id="system" list="sysl" required><datalist id="sysl"></datalist></div>
+  <div><label for="category">Phân loại</label><input id="category" list="catl" placeholder="Điện, cơ khí, mạng, phần mềm..."><datalist id="catl"><option value="Điện"><option value="Cơ khí"><option value="Mạng"><option value="Phần mềm"><option value="Khác"></datalist></div>
+  <div><label for="severity">Mức độ *</label><select id="severity"><option value="low">Thấp</option><option value="medium" selected>Trung bình</option><option value="high">Cao</option><option value="critical">Nghiêm trọng</option></select></div>
+  <div></div>
+  <div><label for="started">Bắt đầu hỏng *</label><input type="datetime-local" id="started" required></div>
+  <div><label for="detected">Phát hiện lúc</label><input type="datetime-local" id="detected"></div>
+  <div><label for="resolved">Khắc phục xong lúc</label><input type="datetime-local" id="resolved"><div class="muted">Để trống nếu sự cố chưa xử lý xong.</div></div>
+  <div></div>
+  <div class="full"><label for="description">Mô tả sự cố</label><textarea id="description"></textarea></div>
+  <div class="full"><label for="root_cause">Nguyên nhân gốc</label><textarea id="root_cause"></textarea></div>
+  <div class="full"><label for="resolution">Cách khắc phục</label><textarea id="resolution"></textarea></div>
+</div></section>
+<section class="card" id="sugCard" hidden><h2>Gợi ý từ các sự cố đã duyệt của hệ thống này</h2><div id="sug"></div></section>
+<section class="card"><h2>Báo cáo và tệp đính kèm</h2>
+  <input type="file" id="files" multiple><div class="muted">Mỗi tệp tối đa 20 MB (ảnh, PDF, Word, Excel, log...).</div>
+  <div id="existing"></div></section>
+<div class="error" id="err" role="alert"></div>
+<div class="row"><button class="primary" id="save">Gửi báo cáo</button><a class="btn" href="incidents.html">Hủy</a></div>
+</form>
+</main></div>
+<script>
+const id = qs('id'); let ctx, inc = null, ATT = [];
+const MAX = 20 * 1024 * 1024;
+const canEdit = r => ctx.profile.role === 'admin' || (r.created_by === ctx.user.id && ['pending', 'rejected'].includes(r.approval));
+function fill(r) {
+  $('#title').value = r.title; $('#system').value = r.system_name; $('#category').value = r.category || '';
+  $('#severity').value = r.severity; $('#started').value = toInput(r.started_at); $('#detected').value = toInput(r.detected_at);
+  $('#resolved').value = toInput(r.resolved_at); $('#description').value = r.description || '';
+  $('#root_cause').value = r.root_cause || ''; $('#resolution').value = r.resolution || '';
+}
+async function loadAtt() {
+  if (!id) return;
+  const { data } = await sb.from('incident_attachments').select('*').eq('incident_id', id).order('created_at');
+  ATT = data || [];
+  $('#existing').innerHTML = ATT.length ? '<table><tbody>' + ATT.map(a => `<tr><td>${esc(a.file_name)}</td><td>${fmtSize(a.file_size || 0)}</td><td><button type="button" class="danger" data-del="${a.id}">Xóa</button></td></tr>`).join('') + '</tbody></table>' : '';
+  $$('[data-del]').forEach(b => b.onclick = async () => {
+    const a = ATT.find(x => x.id === b.dataset.del); if (!confirm('Xóa tệp ' + a.file_name + '?')) return;
+    await sb.storage.from(CFG.BUCKET).remove([a.file_path]);
+    const { error } = await sb.from('incident_attachments').delete().eq('id', a.id);
+    if (error) return toast(error.message);
+    await logEvent(id, 'Xóa tệp đính kèm', a.file_name); loadAtt();
+  });
+}
+async function suggest() {
+  const s = $('#system').value.trim(), card = $('#sugCard');
+  if (!s) { card.hidden = true; return; }
+  let q = sb.from('incidents').select('id,code,title,root_cause,resolution,started_at').eq('system_name', s).eq('approval', 'approved').not('resolution', 'is', null).order('started_at', { ascending: false }).limit(4);
+  if (id) q = q.neq('id', id);
+  const { data } = await q;
+  if (!data || !data.length) { card.hidden = true; return; }
+  card.hidden = false;
+  $('#sug').innerHTML = data.map((r, i) => `<div class="sug"><b>${esc(r.code)}: ${esc(r.title)}</b> <span class="muted">${fmt(r.started_at)}</span>
+    <div><span class="muted">Nguyên nhân:</span> ${esc(r.root_cause || '—')}</div><div><span class="muted">Khắc phục:</span> ${esc(r.resolution)}</div>
+    <button type="button" data-i="${i}">Dùng làm điểm bắt đầu</button> <a href="incident-detail.html?id=${r.id}" target="_blank" rel="noopener">Xem chi tiết</a></div>`).join('');
+  $$('[data-i]').forEach(b => b.onclick = () => {
+    const r = data[+b.dataset.i];
+    if (!$('#root_cause').value && r.root_cause) $('#root_cause').value = r.root_cause;
+    if (!$('#resolution').value) $('#resolution').value = r.resolution;
+    toast('Đã điền vào các ô còn trống. Hãy chỉnh lại cho đúng sự cố này.');
+  });
+}
+async function upload(incidentId) {
+  const list = [...$('#files').files]; let failed = 0;
+  for (const f of list) {
+    if (f.size > MAX) { failed++; toast(f.name + ' vượt quá 20 MB, bỏ qua.'); continue; }
+    const path = `${ctx.user.id}/${incidentId}/${Date.now()}_${f.name.replace(/[^\w.\-]+/g, '_')}`;
+    const up = await sb.storage.from(CFG.BUCKET).upload(path, f, { contentType: f.type || undefined });
+    if (up.error) { failed++; toast('Không tải lên được ' + f.name + ': ' + up.error.message); continue; }
+    const { error } = await sb.from('incident_attachments').insert({ incident_id: incidentId, file_path: path, file_name: f.name, file_size: f.size, mime_type: f.type || null, uploaded_by: ctx.user.id });
+    if (error) { failed++; await sb.storage.from(CFG.BUCKET).remove([path]); continue; }
+    await logEvent(incidentId, 'Tải lên tệp đính kèm', f.name);
+  }
+  return failed;
+}
+$('#f').onsubmit = async e => {
+  e.preventDefault(); const err = $('#err'); err.textContent = '';
+  const p = { title: $('#title').value.trim(), system_name: $('#system').value.trim(), category: $('#category').value.trim() || null,
+    severity: $('#severity').value, description: $('#description').value.trim() || null, root_cause: $('#root_cause').value.trim() || null,
+    resolution: $('#resolution').value.trim() || null, started_at: fromInput($('#started').value), detected_at: fromInput($('#detected').value), resolved_at: fromInput($('#resolved').value) };
+  if (!p.title || !p.system_name || !p.started_at) return err.textContent = 'Nhập tiêu đề, hệ thống và thời điểm bắt đầu hỏng.';
+  if (p.resolved_at && p.resolved_at < p.started_at) return err.textContent = 'Thời điểm khắc phục phải sau thời điểm bắt đầu hỏng.';
+  if (p.detected_at && p.detected_at < p.started_at) return err.textContent = 'Thời điểm phát hiện không được trước thời điểm bắt đầu hỏng.';
+  const admin = ctx.profile.role === 'admin'; $('#save').disabled = true;
+  let res, action;
+  if (!inc) {
+    Object.assign(p, { created_by: ctx.user.id, approval: admin ? 'approved' : 'pending' });
+    if (admin) Object.assign(p, { reviewed_by: ctx.user.id, reviewed_at: new Date().toISOString() });
+    res = await sb.from('incidents').insert(p).select().single(); action = 'Tạo báo cáo';
+  } else {
+    if (!admin) { p.approval = 'pending'; p.review_note = null; }
+    res = await sb.from('incidents').update(p).eq('id', id).select().single();
+    action = !admin && inc.approval === 'rejected' ? 'Chỉnh sửa và gửi lại để duyệt' : 'Cập nhật báo cáo';
+  }
+  if (res.error) { err.textContent = res.error.message; $('#save').disabled = false; return; }
+  await logEvent(res.data.id, action);
+  const failed = await upload(res.data.id);
+  if (failed) toast(failed + ' tệp chưa tải lên được. Mở báo cáo để thử lại.');
+  location.href = 'incident-detail.html?id=' + res.data.id;
+};
+(async () => {
+  ctx = await requireAuth({ active: id ? 'list' : 'new' });
+  const { data: names } = await sb.from('incidents').select('system_name').limit(5000);
+  $('#sysl').innerHTML = [...new Set((names || []).map(n => n.system_name))].sort().map(n => `<option value="${esc(n)}">`).join('');
+  if (id) {
+    const { data, error } = await sb.from('incidents').select('*').eq('id', id).single();
+    if (error || !data) { $('#f').hidden = true; $('#lock').innerHTML = '<div class="notice">Không tìm thấy sự cố hoặc bạn không có quyền xem.</div>'; return; }
+    inc = data;
+    if (!canEdit(inc)) { $('#f').hidden = true; $('#lock').innerHTML = `<div class="notice">Báo cáo đã được duyệt nên không sửa được. <a href="incident-detail.html?id=${id}">Xem chi tiết</a></div>`; return; }
+    $('#h').textContent = 'Chỉnh sửa ' + inc.code; $('#save').textContent = 'Lưu thay đổi';
+    $('#sub').textContent = ctx.profile.role === 'admin' ? 'Quản trị viên sửa không làm đổi trạng thái duyệt.' : 'Sau khi lưu, báo cáo quay về trạng thái chờ duyệt.';
+    fill(inc); await loadAtt();
+  } else {
+    const st = ctx.profile.settings; $('#started').value = toInput(new Date());
+    if (st.default_severity) $('#severity').value = st.default_severity;
+    if (st.default_system) $('#system').value = st.default_system;
+    if (ctx.profile.role === 'admin') $('#sub').textContent = 'Báo cáo do quản trị viên tạo được duyệt ngay.';
+  }
+  $('#system').addEventListener('change', suggest); suggest();
+})();
+</script></body></html>

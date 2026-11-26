@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script><script src="common.js"></script>
+<title>Chi tiết sự cố | Quản lý sự cố</title></head>
+<body><div class="shell"><main class="wrap">
+<div id="top"></div><div id="body"></div>
+</main></div>
+<script>
+const id = qs('id'); let ctx, inc;
+async function review(status) {
+  const note = $('#note').value.trim();
+  if (status === 'rejected' && !note) return $('#rerr').textContent = 'Nhập lý do từ chối để nhân viên biết cần sửa gì.';
+  const { error } = await sb.from('incidents').update({ approval: status, review_note: note || null, reviewed_by: ctx.user.id, reviewed_at: new Date().toISOString() }).eq('id', id);
+  if (error) return $('#rerr').textContent = error.message;
+  await logEvent(id, status === 'approved' ? 'Đã duyệt' : status === 'rejected' ? 'Từ chối' : 'Chuyển về chờ duyệt', note);
+  toast('Đã cập nhật trạng thái duyệt.'); load();
+}
+async function remove() {
+  if (!confirm('Xóa báo cáo ' + inc.code + ' cùng tệp đính kèm? Không thể hoàn tác.')) return;
+  const { data: att } = await sb.from('incident_attachments').select('file_path').eq('incident_id', id);
+  if (att && att.length) await sb.storage.from(CFG.BUCKET).remove(att.map(a => a.file_path));
+  const { error } = await sb.from('incidents').delete().eq('id', id);
+  if (error) return toast(error.message);
+  location.href = 'incidents.html';
+}
+async function load() {
+  const { data, error } = await sb.from('incidents').select('*, creator:profiles!created_by(full_name,department), reviewer:profiles!reviewed_by(full_name)').eq('id', id).single();
+  if (error || !data) { $('#body').innerHTML = '<div class="notice">Không tìm thấy sự cố hoặc bạn không có quyền xem.</div>'; return; }
+  inc = data;
+  const [{ data: att }, { data: ev }] = await Promise.all([
+    sb.from('incident_attachments').select('*').eq('incident_id', id).order('created_at'),
+    sb.from('incident_events').select('*, who:profiles!actor(full_name)').eq('incident_id', id).order('created_at', { ascending: false })]);
+  const admin = ctx.profile.role === 'admin', mine = inc.created_by === ctx.user.id;
+  const editable = admin || (mine && ['pending', 'rejected'].includes(inc.approval));
+  $('#top').innerHTML = `<div class="head"><div><h1>${esc(inc.title)}</h1><div class="muted">${esc(inc.code)}</div></div>
+    <div class="row">${editable ? `<a class="btn" href="incident-form.html?id=${id}">Chỉnh sửa</a><button class="danger" id="del" type="button">Xóa</button>` : ''}<a class="btn" href="incidents.html">Danh sách</a></div></div>`;
+  if (editable) $('#del').onclick = remove;
+  const links = await Promise.all((att || []).map(async a => ({ a, url: await signedUrl(a.file_path) })));
+  $('#body').innerHTML = `
+  ${inc.approval === 'rejected' ? `<div class="notice">Báo cáo bị từ chối: ${esc(inc.review_note || 'không có ghi chú')}${mine ? ' Hãy chỉnh sửa và gửi lại.' : ''}</div>` : ''}
+  <section class="card"><dl class="dl">
+    <dt>Tình trạng</dt><dd>${stateBadge(inc)} ${apprBadge(inc.approval)} ${sevBadge(inc.severity)}</dd>
+    <dt>Hệ thống</dt><dd>${esc(inc.system_name)}</dd><dt>Phân loại</dt><dd>${esc(inc.category || '—')}</dd>
+    <dt>Bắt đầu hỏng</dt><dd>${fmt(inc.started_at)}</dd><dt>Phát hiện</dt><dd>${fmt(inc.detected_at)}${inc.detected_at ? ` (sau ${fmtDur(hoursBetween(inc.started_at, inc.detected_at))})` : ''}</dd>
+    <dt>Khắc phục xong</dt><dd>${fmt(inc.resolved_at)}</dd>
+    <dt>Thời gian khắc phục</dt><dd>${inc.resolved_at ? fmtDur(hoursBetween(inc.started_at, inc.resolved_at)) : 'Đang tồn ' + fmtDur(hoursBetween(inc.started_at, new Date()))}</dd>
+    <dt>Người báo cáo</dt><dd>${esc(inc.creator?.full_name || '—')}${inc.creator?.department ? ' (' + esc(inc.creator.department) + ')' : ''}</dd>
+    <dt>Mô tả</dt><dd>${esc(inc.description || '—')}</dd><dt>Nguyên nhân gốc</dt><dd>${esc(inc.root_cause || '—')}</dd><dt>Cách khắc phục</dt><dd>${esc(inc.resolution || '—')}</dd>
+    ${inc.reviewed_at ? `<dt>Duyệt bởi</dt><dd>${esc(inc.reviewer?.full_name || '—')}, ${fmt(inc.reviewed_at)}${inc.review_note ? '\n' + esc(inc.review_note) : ''}</dd>` : ''}
+  </dl></section>
+  <section class="card"><h2>Tệp đính kèm</h2>${links.length ? '<table><tbody>' + links.map(({ a, url }) => `<tr><td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(a.file_name)}</a>` : esc(a.file_name)}</td><td>${fmtSize(a.file_size || 0)}</td><td>${fmt(a.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<div class="empty">Chưa có tệp đính kèm.</div>'}</section>
+  ${admin ? `<section class="card"><h2>Duyệt báo cáo</h2><label for="note">Ghi chú (bắt buộc khi từ chối)</label><textarea id="note">${esc(inc.review_note || '')}</textarea>
+    <div class="error" id="rerr" role="alert"></div><div class="row"><button class="ok" id="ap" type="button">Duyệt</button><button class="danger" id="rj" type="button">Từ chối</button>${inc.approval !== 'pending' ? '<button id="pd" type="button">Chuyển về chờ duyệt</button>' : ''}</div></section>` : ''}
+  <section class="card"><h2>Lịch sử thao tác</h2>${ev && ev.length ? '<ul class="timeline">' + ev.map(e => `<li><b>${esc(e.action)}</b> <span class="muted">${esc(e.who?.full_name || '')}, ${fmt(e.created_at)}</span>${e.note ? '<div>' + esc(e.note) + '</div>' : ''}</li>`).join('') + '</ul>' : '<div class="empty">Chưa có thao tác nào.</div>'}</section>`;
+  if (admin) { $('#ap').onclick = () => review('approved'); $('#rj').onclick = () => review('rejected'); if ($('#pd')) $('#pd').onclick = () => review('pending'); }
+}
+(async () => { ctx = await requireAuth({ active: 'list' }); if (!id) { location.href = 'incidents.html'; return; } load(); })();
+</script></body></html>
