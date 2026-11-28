@@ -1,4 +1,4 @@
-// Điền thông tin từ Supabase: Project Settings > API
+// Điền thông tin từ Supabase: Project Settings > API 
 // Anon key là khóa công khai, dữ liệu được bảo vệ bằng RLS trong schema.sql
 window.CFG = {
   SUPABASE_URL: 'https://pqlgmovsojhoxjfnzire.supabase.co',
